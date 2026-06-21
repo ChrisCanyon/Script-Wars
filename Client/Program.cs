@@ -45,7 +45,7 @@ static class Program
 
         // Textures must be loaded after InitWindow (needs an active GL context).
         Texture2D playerTex = LoadTextureIfPresent("player.png");
-        Texture2D[] playerPaletteTex = PlayerPalette.LoadVariants(Path.Combine("player", "down", "idle-0.png"));
+        Texture2D[] playerPaletteTex = PlayerPalette.LoadVariants("player-palette.png");
         Texture2D botTex = LoadTextureIfPresent("bot.png");
         Texture2D floorTex = LoadTextureIfPresent("floor.png");
 
@@ -63,7 +63,7 @@ static class Program
             else
             {
                 DrawFloor(state, floorTex);
-                DrawEntities(state, playerTex, botTex);
+                DrawEntities(state, playerPaletteTex, playerTex, botTex);
                 DrawMenu(state);
             }
 
@@ -110,19 +110,22 @@ static class Program
             }
     }
 
-    static void DrawEntities(ObservationDto s, Texture2D playerTex, Texture2D botTex)
+    static void DrawEntities(ObservationDto s, Texture2D[] playerPaletteTex, Texture2D playerTex, Texture2D botTex)
     {
-        DrawActor(s.Self.Position.X, s.Self.Position.Y, true, playerTex, botTex);
+        DrawActor(s.Self.Id, s.Self.Type, s.Self.Position.X, s.Self.Position.Y, playerPaletteTex, botTex);
         foreach (var a in s.VisibleActors)
-            DrawActor(a.Position.X, a.Position.Y, false, playerTex, botTex);
+            DrawActor(a.Id, a.Type, a.Position.X, a.Position.Y, playerPaletteTex, botTex);
     }
 
-    static void DrawActor(int x, int y, bool isPlayer, Texture2D playerTex, Texture2D botTex)
+    static void DrawActor(string id, string type, int x, int y, Texture2D[] playerPaletteTex, Texture2D botTex)
     {
         int px = x * TileSize, py = y * TileSize;
-        Texture2D tex = isPlayer ? playerTex : botTex;
-        if (tex.Id != 0) DrawTextureScaled(tex, px, py);
-        else Raylib.DrawRectangle(px, py, TileSize, TileSize, isPlayer ? Color.Blue : Color.Red);
+        bool isPlayer = type == "player";
+        Texture2D tex = isPlayer ? PlayerPalette.Pick(playerPaletteTex, id) : botTex;
+        if (tex.Id != 0)
+            DrawTextureScaled(tex, px, py);
+        else
+            Raylib.DrawRectangle(px, py, TileSize, TileSize, isPlayer ? Color.Blue : Color.Red);
     }
 
     // Pokémon-style action menu along the bottom. Returns the menu-item rectangles
