@@ -102,11 +102,15 @@ public static class Rules
         var blocked = new HashSet<string>();
 
         // Block moves into tiles occupied by actors that are NOT moving away.
+        // The mover bumps the stationary occupant: both trade a melee hit (inert this increment).
         foreach (var (id, pos) in desired)
         {
             var occupant = state.ActorAt(pos.X, pos.Y);
             if (occupant is not null && !desired.ContainsKey(occupant.Id))
+            {
                 blocked.Add(id);
+                EmitBumpsAmong(events, new[] { id, occupant.Id });
+            }
         }
 
         // contested_tile_blocks_all: 2+ actors targeting the same tile all stay put.

@@ -187,4 +187,17 @@ public class RulesTests
             new Intention("bot", "wait")));
         Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "player" && e.TargetId == null);
     }
+
+    [Fact]
+    public void Resolve_move_into_stationary_actor_blocks_and_emits_bump_events()
+    {
+        // player at (5,5) tries to move onto bot at (5,4); bot waits (stationary).
+        var s = TwoActors(5, 5, 5, 4);
+        var (ns, events) = Rules.Resolve(s, Intents(
+            new Intention("player", "move", new Target(Position: new Position(5, 4))),
+            new Intention("bot", "wait")));
+        Assert.Equal((5, 5), (ns.ById("player")!.X, ns.ById("player")!.Y)); // blocked, stayed put
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "player" && e.TargetId == "bot");
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "bot" && e.TargetId == "player");
+    }
 }
