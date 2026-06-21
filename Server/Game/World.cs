@@ -1,94 +1,115 @@
+using ArenaGame.Core;
+
 namespace ArenaGame.Game;
 
-// The whole game lives here. It knows nothing about HTTP, JSON, or rendering —
-// it just holds state and applies actions. Everything else is an adapter around it.
+// Authoritative game state for one match. Holds the Core StateModel plus the
+// turn bookkeeping (tick, pending intentions, last result). All rules live in Core.
 public class World
 {
     private readonly object _lock = new();
     private readonly Random _rng = new();
 
-    public int Width { get; }
-    public int Height { get; }
-    private readonly List<Entity> _entities = new();
+    private readonly StateModel _state;
+    private readonly Dictionary<string, Intention> _pending = new();
+    private int _tick;
+    private LastTurnResultDto? _last;
 
-    // The fixed menu of actions the server offers clients. The client renders
-    // and chooses from THIS list rather than hardcoding its own — the server is
-    // the authority on what's legal. Grows over time (Attack, Bank, ...).
-    public static readonly string[] AvailableActions =
-    {
-        "MoveUp", "MoveDown", "MoveLeft", "MoveRight",
-    };
+    private const string PlayerId = "player";
+    private const string BotId = "bot";
+
+    private static readonly RulesDto RulesInfo = new(
+        PhaseOrder: new[] { "movement", "attacks", "cleanup" },
+        MovementConflictRule: "contested_tile_blocks_all",
+        SwapRule: "direct_swaps_blocked",
+        MissingAction: "wait");
 
     public World(int width, int height)
     {
-        Width = width;
-        Height = height;
-        _entities.Add(new Entity { Id = "player", Kind = "player", X = width / 2, Y = height / 2 });
-        _entities.Add(new Entity { Id = "bot", Kind = "bot", X = 1, Y = 1 });
+        _state = new StateModel
+        {
+            Width = width, Height = height,
+            Actors =
+            {
+                new ActorState { Id = PlayerId, Type = "player", TeamId = "players",
+                                 Hp = 100, MaxHp = 100, X = width / 2, Y = height / 2 },
+                new ActorState { Id = BotId, Type = "bot", TeamId = "bots",
+                                 Hp = 30, MaxHp = 30, X = 1, Y = 1 },
+            }
+        };
+        AutoPickBot();
     }
 
-    // The state -> action boundary. Apply one action for one entity.
-    // Action "type" is a string from a predefined list; that's what a remote
-    // bot or human client will send as JSON later.
-    public void Apply(string entityId, string actionType)
+    public bool Submit(Intention intention)
     {
         lock (_lock)
         {
-            var e = _entities.FirstOrDefault(x => x.Id == entityId);
-            if (e is null) return;
-
-            var (dx, dy) = actionType switch
-            {
-                "MoveUp" => (0, -1),
-                "MoveDown" => (0, 1),
-                "MoveLeft" => (-1, 0),
-                "MoveRight" => (1, 0),
-                _ => (0, 0),
-            };
-            MoveWithinBounds(e, dx, dy);
+            if (intention.ActorId != PlayerId) return false;          // only the human posts
+            if (!Rules.IsLegal(_state, intention)) return false;
+            _pending[PlayerId] = intention;
+            TryResolve();
+            return true;
         }
     }
 
-    // Server-driven tick: bots that aren't controlled by an external responder
-    // do something on their own. For now the bot just wanders.
-    public void Step()
+    // Choose a legal action for the bot for the current tick. Random move, else wait.
+    private void AutoPickBot()
     {
-        lock (_lock)
+        var moves = Rules.LegalTargets(_state, BotId, "move");
+        _pending[BotId] = moves.Count > 0
+            ? new Intention(BotId, "move", new Target(Position: moves[_rng.Next(moves.Count)]))
+            : new Intention(BotId, "wait");
+    }
+
+    private void TryResolve()
+    {
+        if (!_state.Actors.All(a => _pending.ContainsKey(a.Id))) return;
+
+        var submittedByPlayer = _pending.TryGetValue(PlayerId, out var pv) ? pv : null;
+        var (next, events) = Rules.Resolve(_state, _pending);
+
+        // Copy resolved positions back into the authoritative state.
+        foreach (var a in _state.Actors)
         {
-            var bot = _entities.First(e => e.Id == "bot");
-            var (dx, dy) = _rng.Next(4) switch
-            {
-                0 => (0, -1),
-                1 => (0, 1),
-                2 => (-1, 0),
-                _ => (1, 0),
-            };
-            MoveWithinBounds(bot, dx, dy);
+            var n = next.ById(a.Id)!;
+            a.X = n.X; a.Y = n.Y; a.Hp = n.Hp;
         }
+
+        _tick++;
+        _last = new LastTurnResultDto(_tick, submittedByPlayer, true, events.ToArray());
+        _pending.Clear();
+        AutoPickBot(); // bot is ready again for the next tick
     }
 
-    private void MoveWithinBounds(Entity e, int dx, int dy)
-    {
-        int nx = Math.Clamp(e.X + dx, 0, Width - 1);
-        int ny = Math.Clamp(e.Y + dy, 0, Height - 1);
-        e.X = nx;
-        e.Y = ny;
-    }
-
-    // Read-only snapshot for the client. This is the shape that becomes the JSON payload.
-    public object Snapshot()
+    public ObservationDto Snapshot()
     {
         lock (_lock)
         {
-            return new
-            {
-                width = Width,
-                height = Height,
-                actions = AvailableActions,
-                entities = _entities
-                    .Select(e => new { id = e.Id, kind = e.Kind, x = e.X, y = e.Y })
+            var self = _state.ById(PlayerId)!;
+            return new ObservationDto(
+                Tick: _tick,
+                Width: _state.Width,
+                Height: _state.Height,
+                Rules: RulesInfo,
+                Self: new SelfDto(self.Id, self.Type, self.TeamId, self.Hp, self.MaxHp,
+                                  new Position(self.X, self.Y), self.StatusEffects),
+                VisibleActors: _state.Actors.Where(a => a.Id != PlayerId)
+                    .Select(a => new ActorDto(a.Id, a.Type, a.TeamId, a.Hp, a.MaxHp,
+                                              new Position(a.X, a.Y), a.StatusEffects))
                     .ToArray(),
-            };
+                VisibleTiles: AllTiles(),
+                Auras: Array.Empty<object>(),
+                AvailableActions: Actions.OfferedFor(_state, PlayerId),
+                LastTurnResult: _last,
+                PlayerSubmitted: _pending.ContainsKey(PlayerId));
         }
+    }
+
+    private TileDto[] AllTiles()
+    {
+        var tiles = new List<TileDto>(_state.Width * _state.Height);
+        for (int y = 0; y < _state.Height; y++)
+            for (int x = 0; x < _state.Width; x++)
+                tiles.Add(new TileDto(x, y, "stone", false));
+        return tiles.ToArray();
     }
 }
