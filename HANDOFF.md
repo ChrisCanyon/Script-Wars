@@ -1,11 +1,15 @@
 # Arena Game — Session Handoff / Context Dump
 
-**Last updated:** 2026-06-20
+**Last updated:** 2026-06-21
 **Repo:** `C:\TylerDev\arena-game-csharp` (WSL: `/mnt/c/TylerDev/arena-game-csharp`)
-**Status:** MVP COMPLETE. Server cleaned + Raylib-cs sprite client built. Solution builds
-clean (0 warnings/0 errors). Server protocol verified end-to-end. Real sprite art dropped in.
-Remaining gap: the Raylib window has only been built, not visually run/verified (must run on
-Windows — see note below).
+**Git:** now a git repo (branch `main`), pushed to `origin` =
+https://github.com/ChrisCanyon/Script-Wars (remote's original LICENSE preserved via an
+unrelated-histories merge). Identity set repo-locally (Chris Nagy / christopher.nagy@tylertech.com).
+**Status:** TURN-BASED + Pokémon-style targeting UI COMPLETE (13 commits, 10 TDD tasks).
+Solution builds clean (0/0). Core rules engine has 19/19 passing unit tests. Two gaps below:
+(1) the Raylib client UI has NOT been visually run (Raylib needs a Windows display; WSL can't
+reach the Windows-bound server either); (2) a sprite-rendering conflict with in-flight WIP —
+see "What's LEFT".
 
 ---
 
@@ -61,20 +65,27 @@ A simple **C# server + C# client**:
 ```
 arena-game-csharp/
   HANDOFF.md              <- this file
-  arena-game-csharp.sln   <- references Server + Client  [DONE]
+  arena-game-csharp.sln   <- references Core + Core.Tests + Server + Client
+  docs/superpowers/        <- spec + plan for the turn-based work (2026-06-21-turn-based-targeting*)
+  Core/                    <- NEW shared lib (ArenaGame.Core); single source of truth for rules
+    Contract.cs           <- ObservationDto/SelfDto/ActorDto/TileDto/RulesDto/LastTurnResultDto + Intention/Target
+    Actions.cs            <- ActionDef registry; OfferedIds = move/basic_attack/wait (healing_potion defined, not offered)
+    StateModel.cs         <- StateModel + ActorState; FromObservation()
+    Position.cs           <- Position, GameEvent
+    Rules.cs              <- LegalTargets / IsLegal / Resolve (pure; used by BOTH server + client)
+  Core.Tests/             <- xUnit; 19 tests over Rules (LegalTargets/IsLegal/Resolve)
   Server/
-    Server.csproj         <- net8.0 web app, AssemblyName "arena-server"  [DONE]
-    Program.cs            <- minimal-API server  [CLEANED]
-    Game/
-      Entity.cs           <- Id, Kind ("player"|"bot"), X, Y  [unchanged]
-      World.cs            <- game core; entities, Apply/Step/Snapshot, AvailableActions  [DONE]
+    Server.csproj         <- net8.0 web app, refs Core, AssemblyName "arena-server"
+    Program.cs            <- minimal API: GET /state (observation), POST /action (intention) — NO tick loop
+    Game/World.cs         <- authoritative StateModel + _pending intentions + tick; delegates to Core.Rules
+    (Entity.cs DELETED — replaced by ArenaGame.Core.ActorState)
   Client/
-    Client.csproj         <- net8.0 Exe, AssemblyName "arena-client", Raylib-cs 6.1.1  [DONE]
-    Program.cs            <- Raylib sprite client (poll /state, draw, send actions)  [DONE]
-    assets/               <- player.png, bot.png, floor.png, wall.png  [DROPPED IN]
+    Client.csproj         <- net8.0 Exe, refs Core, Raylib-cs 6.1.1
+    Program.cs            <- Raylib client: poll observation, menu, targeting highlights, submit intentions
+    PlayerPalette.cs      <- recolors a sentinel-marked sprite into per-team variants (Pick by id)
+    assets/               <- bot.png, floor.png, wall.png, player.png, player/{up,down,left,right}/ (WIP frames)
 ```
-The old browser client (`wwwroot/index.html`) and root `arena-game-csharp.csproj` were
-DELETED on purpose in the prior session.
+The old browser client and root csproj were deleted in an earlier session.
 
 ---
 
@@ -99,11 +110,15 @@ DELETED on purpose in the prior session.
   ]
 }
 ```
-### Server endpoints (in `Server/Program.cs`)
-- `GET  /state`  -> `world.Snapshot()`
-- `POST /action` body `{ "entityId": "player", "type": "MoveUp" }` -> `world.Apply(...)`
-- Background `Task` ticks `world.Step()` every 400ms (bot wanders randomly).
+### Server endpoints (in `Server/Program.cs`) — CURRENT (turn-based)
+- `GET  /state`  -> `world.Snapshot()` returns an **ObservationDto** (tick, self, visibleActors,
+  whole-board visibleTiles, availableActions [move/basic_attack/wait], rules, lastTurnResult, playerSubmitted).
+- `POST /action` body is an **Intention** `{ "actorId":"player", "actionId":"move", "target":{"position":{"x":6,"y":5}} }`
+  -> `world.Submit(...)`; validated by `Rules.IsLegal` (200 ok / 400 illegal).
+- **No background tick loop.** The bot auto-readies each tick; the world resolves when all actors are pending.
 - Runs on `http://localhost:5000`.
+- NOTE: the old `{ "entityId", "type":"MoveUp" }` / `Apply` / `Step` API and the MoveUp/Down/Left/Right
+  action set are GONE. The `/state` JSON example shown earlier in this doc is the OLD shape (superseded).
 
 ---
 
@@ -135,16 +150,46 @@ built the two halves; coordinator did the .sln + build + verify.
 GET `/state` returns the 12×12 world + actions `[MoveUp,MoveDown,MoveLeft,MoveRight]`.
 POST `MoveUp` then `MoveLeft` moved the player (6,6)→(5,5). Protocol works.
 
+## What was done 2026-06-21 (turn-based + targeting UI)
+
+Converted real-time → **turn-based, simultaneous resolution** with a **Pokémon-style
+action→target UI**. Spec + plan in `docs/superpowers/`. Built via subagent-driven TDD
+(10 tasks, per-task reviews + a final whole-branch review). Key decisions:
+
+1. **Shared `Core` library** holds the wire contract and the pure rules. The **client computes
+   tile highlights** with `Core.Rules.LegalTargets` and the **server validates** submissions with
+   `Core.Rules.IsLegal` — same code path, so a client-offered tile can't be server-rejected.
+2. **Intention-based contract** (observation in → intention out), shaped to match the longer-term
+   bot contract (teams, hp, statusEffects, lastTurnResult/events are present as fields). Fog,
+   auras, inventory, real damage/death, >1 bot are deliberately DEFERRED.
+3. **Resolution** by phaseOrder `[movement, attacks, cleanup]`. Movement conflicts:
+   `contested_tile_blocks_all` + `direct_swaps_blocked`; a blocked actor stays put and trades a
+   **mutual melee "damage" event** with whoever it bumped (incl. walking into a stationary actor).
+   **Combat is wired-but-INERT**: events are emitted, hp never changes, nobody dies.
+4. **Client UI**: data-driven menu from `availableActions`; pick an action → if it needs a target,
+   legal tiles highlight → click to commit; cancel via Esc / right-click / re-clicking the action.
+   Waiting state clears on tick advance and recovers from a rejected/failed POST.
+
 ## What's LEFT
 
-1. **Visually run the client** (must be done on Windows — Raylib needs a real display;
-   WSL can't reach the Windows-bound server anyway). Start server then client on Windows;
-   confirm the knight renders, arrow keys move it, the robot wanders. This is the one
-   unverified piece.
-2. Optional polish: use `wall.png` for a border, smooth movement/animation, window title
-   tweaks — none required for MVP.
-3. Then resume the real game design (gold/combat/fog) behind the same `state -> action`
-   boundary.
+1. **SPRITE CONFLICT (do this first).** There is in-flight WIP (UNCOMMITTED in the working tree):
+   `player-palette.png` was deleted, `PlayerPalette.cs` has a param rename, `README.txt` edited,
+   and `assets/player/{up,down,left,right}/` directional frames were added. But the committed
+   client code loads `player-palette.png` (which no longer exists) → `PlayerPalette.Pick` returns
+   default → **the player renders as a fallback blue rectangle**. Decide: wire the new directional
+   frames into `Client/Program.cs` `DrawActor`, OR restore `player-palette.png`. Commit the WIP
+   once reconciled.
+2. **Visually run the client** (Windows only — Raylib needs a display; WSL can't reach the
+   Windows-bound server). Confirm: menu renders; Move highlights up-to-4 adjacent tiles and click
+   moves the player + advances the tick; Attack highlights the adjacent bot; Wait passes; Esc/
+   right-click/re-click cancel. This is unverified — the build + 19 Core tests are green, but the
+   UI itself has never been run.
+3. **Next increment (designed to slot in without protocol rework):** fog of view (filter
+   `visibleActors`/`visibleTiles` in `Snapshot`), real combat (apply `events` to hp in the reserved
+   cleanup hook + health bars/animations), inventory/`healing_potion`, more bots/teams
+   (`AutoPickBot` → loop; `TryResolve` already supports N actors). Also flagged for multi-actor:
+   extract a shared move-shape helper for `LegalTargets`+`Resolve`; handle 3+ actor chained-vacate
+   and the O(n²) swap-loop double-emit (fine for player+1-bot today).
 
 ---
 
@@ -163,7 +208,11 @@ boundary.
 
 ## Resume checklist (read these first next session)
 1. This file.
-2. `Server/Game/World.cs` and `Server/Program.cs` (current server truth).
-3. The brainstorm doc in the OLD repo:
+2. `Core/Rules.cs` + `Core/Contract.cs` + `Core/Actions.cs` (the rules + wire contract — the heart).
+3. `Server/Game/World.cs` and `Server/Program.cs` (turn loop + endpoints).
+4. `Client/Program.cs` (menu/targeting/submit) and `Client/PlayerPalette.cs` (for the sprite conflict).
+5. The spec + plan: `docs/superpowers/specs/2026-06-21-turn-based-targeting-design.md` and
+   `docs/superpowers/plans/2026-06-21-turn-based-targeting.md`.
+6. The brainstorm doc in the OLD repo:
    `C:\TylerDev\prize-game-csharp\docs\brainstorm\2026-06-19-arena-game-ideas.md`.
-4. Then resume at "What's LEFT" step 1.
+7. Then resume at "What's LEFT" step 1 (sprite conflict), then step 2 (run the client on Windows).
