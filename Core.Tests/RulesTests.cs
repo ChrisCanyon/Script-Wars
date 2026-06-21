@@ -155,4 +155,36 @@ public class RulesTests
         Assert.Equal((5, 5), (ns.ById("player")!.X, ns.ById("player")!.Y));
         Assert.Equal((1, 1), (ns.ById("bot")!.X, ns.ById("bot")!.Y));
     }
+
+    [Fact]
+    public void Resolve_attack_by_actorId_emits_inert_damage_event()
+    {
+        var s = TwoActors(5, 5, 5, 4);
+        var (ns, events) = Rules.Resolve(s, Intents(
+            new Intention("player", "basic_attack", new Target(ActorId: "bot")),
+            new Intention("bot", "wait")));
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "player" && e.TargetId == "bot");
+        Assert.Equal(30, ns.ById("bot")!.Hp); // inert: hp unchanged
+    }
+
+    [Fact]
+    public void Resolve_attack_uses_post_movement_position()
+    {
+        // bot starts at (5,3) and moves to (5,4); player attacks tile (5,4).
+        var s = TwoActors(5, 5, 5, 3);
+        var (_, events) = Rules.Resolve(s, Intents(
+            new Intention("player", "basic_attack", new Target(Position: new Position(5, 4))),
+            new Intention("bot", "move", new Target(Position: new Position(5, 4)))));
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "player" && e.TargetId == "bot");
+    }
+
+    [Fact]
+    public void Resolve_attack_on_empty_tile_emits_event_with_no_target()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        var (_, events) = Rules.Resolve(s, Intents(
+            new Intention("player", "basic_attack", new Target(Position: new Position(5, 4))),
+            new Intention("bot", "wait")));
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "player" && e.TargetId == null);
+    }
 }

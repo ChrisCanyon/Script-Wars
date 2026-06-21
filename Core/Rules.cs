@@ -141,6 +141,27 @@ public static class Rules
             actor.X = pos.X; actor.Y = pos.Y;
         }
 
+        // Attacks phase: resolve against POST-movement positions. Inert (no hp change).
+        const int MeleeAttackDamage = 1;
+        foreach (var actor in next.Actors)
+        {
+            if (!intentions.TryGetValue(actor.Id, out var intent)) continue;
+            if (intent.ActionId != "basic_attack") continue;
+            if (!IsLegal(state, intent)) continue; // legality is judged on pre-move state, like submission
+
+            // Find the targeted tile and whoever stands there now (post-movement).
+            Position? tile = intent.Target?.Position;
+            if (tile is null && intent.Target?.ActorId is not null)
+            {
+                var named = next.ById(intent.Target.ActorId);
+                if (named is not null) tile = new Position(named.X, named.Y);
+            }
+            string? victimId = tile is null ? null : next.ActorAt(tile.X, tile.Y)?.Id;
+            events.Add(new GameEvent("damage", actor.Id, victimId, MeleeAttackDamage));
+        }
+
+        // Cleanup phase: reserved (no deaths/status this increment).
+
         return (next, events);
     }
 
