@@ -1,25 +1,19 @@
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Raylib_cs;
+using ArenaGame.Core;
 
 namespace ArenaGame.Client;
-
-// JSON property names from the server are lowercase, so we match them directly.
-record StateDto(int width, int height, string[] actions, EntityDto[] entities);
-record EntityDto(string id, string kind, int x, int y);
-record ActionRequest(string entityId, string type);
 
 static class Program
 {
     const int TileSize = 48;
     const string ServerUrl = "http://localhost:5000";
-    const string PlayerEntityId = "player";
 
     // Latest snapshot of server state. Written by the polling task, read by the
     // render loop; guarded by a lock so the render loop always sees a coherent value.
     static readonly object StateLock = new();
-    static StateDto? _latestState;
+    static ObservationDto? _latestState;
 
     static readonly HttpClient Http = new() { BaseAddress = new Uri(ServerUrl) };
 
@@ -28,42 +22,36 @@ static class Program
         PropertyNameCaseInsensitive = true
     };
 
+    enum Mode { Menu, Targeting, Waiting }
+    static Mode _mode = Mode.Menu;
+#pragma warning disable CS0649 // assigned by Tasks 9/10
+    static string? _selectedActionId;
+#pragma warning restore CS0649
+    const int MenuHeight = 96;
+
     static void Main()
     {
         // Start polling the server in the background before opening the window.
         _ = Task.Run(PollLoop);
 
         // Size the window from the first state if we already have one; otherwise
-        // default to a 12x12 grid and let later states resize logic stay simple.
-        StateDto? initial = SnapshotState();
-        int gridW = initial?.width ?? 12;
-        int gridH = initial?.height ?? 12;
+        // default to a 12x12 grid.
+        ObservationDto? initial = SnapshotState();
+        int gridW = initial?.Width ?? 12;
+        int gridH = initial?.Height ?? 12;
 
-        Raylib.InitWindow(gridW * TileSize, gridH * TileSize, "Arena Game");
+        Raylib.InitWindow(gridW * TileSize, gridH * TileSize + MenuHeight, "Arena Game");
         Raylib.SetTargetFPS(60);
 
         // Textures must be loaded after InitWindow (needs an active GL context).
         Texture2D playerTex = LoadTextureIfPresent("player.png");
-        Texture2D[] playerPaletteTex = PlayerPalette.LoadVariants("player-palette.png");
+        Texture2D[] playerPaletteTex = PlayerPalette.LoadVariants(Path.Combine("player", "down", "idle-0.png"));
         Texture2D botTex = LoadTextureIfPresent("bot.png");
         Texture2D floorTex = LoadTextureIfPresent("floor.png");
 
-        int windowW = gridW;
-        int windowH = gridH;
-
         while (!Raylib.WindowShouldClose())
         {
-            StateDto? state = SnapshotState();
-
-            // Resize the window if the grid dimensions from the server change.
-            if (state is not null && (state.width != windowW || state.height != windowH))
-            {
-                windowW = state.width;
-                windowH = state.height;
-                Raylib.SetWindowSize(windowW * TileSize, windowH * TileSize);
-            }
-
-            HandleInput(state);
+            ObservationDto? state = SnapshotState();
 
             Raylib.BeginDrawing();
             Raylib.ClearBackground(Color.Black);
@@ -75,8 +63,8 @@ static class Program
             else
             {
                 DrawFloor(state, floorTex);
-                DrawEntities(state, playerTex, playerPaletteTex, botTex);
-                DrawLegend(state);
+                DrawEntities(state, playerTex, botTex);
+                DrawMenu(state);
             }
 
             Raylib.EndDrawing();
@@ -91,7 +79,7 @@ static class Program
         Raylib.CloseWindow();
     }
 
-    static StateDto? SnapshotState()
+    static ObservationDto? SnapshotState()
     {
         lock (StateLock) return _latestState;
     }
@@ -102,95 +90,70 @@ static class Program
         {
             try
             {
-                StateDto? state = await Http.GetFromJsonAsync<StateDto>("/state", JsonOpts);
-                if (state is not null)
-                {
-                    lock (StateLock) _latestState = state;
-                }
+                var obs = await Http.GetFromJsonAsync<ObservationDto>("/state", JsonOpts);
+                if (obs is not null) lock (StateLock) _latestState = obs;
             }
-            catch
-            {
-                // Server may be down or starting up; keep retrying silently.
-            }
-
+            catch { /* server starting up; retry */ }
             await Task.Delay(100);
         }
     }
 
-    static void HandleInput(StateDto? state)
+    static void DrawFloor(ObservationDto s, Texture2D floorTex)
     {
-        if (state is null) return;
-
-        string? action = null;
-        if (Raylib.IsKeyPressed(KeyboardKey.Up)) action = "MoveUp";
-        else if (Raylib.IsKeyPressed(KeyboardKey.Down)) action = "MoveDown";
-        else if (Raylib.IsKeyPressed(KeyboardKey.Left)) action = "MoveLeft";
-        else if (Raylib.IsKeyPressed(KeyboardKey.Right)) action = "MoveRight";
-
-        if (action is null) return;
-
-        // The server is the authority on legality: only send actions it currently offers.
-        if (Array.IndexOf(state.actions, action) < 0) return;
-
-        _ = SendAction(action);
-    }
-
-    static async Task SendAction(string type)
-    {
-        try
-        {
-            await Http.PostAsJsonAsync("/action", new ActionRequest(PlayerEntityId, type));
-        }
-        catch
-        {
-            // Fire-and-forget; ignore transient failures.
-        }
-    }
-
-    static void DrawFloor(StateDto state, Texture2D floorTex)
-    {
-        for (int y = 0; y < state.height; y++)
-        {
-            for (int x = 0; x < state.width; x++)
+        for (int y = 0; y < s.Height; y++)
+            for (int x = 0; x < s.Width; x++)
             {
-                int px = x * TileSize;
-                int py = y * TileSize;
-
-                if (floorTex.Id != 0)
-                    DrawTextureScaled(floorTex, px, py);
-                else
-                    Raylib.DrawRectangle(px, py, TileSize, TileSize, new Color(30, 30, 35, 255));
-
-                // Light grid lines so individual cells are visible.
+                int px = x * TileSize, py = y * TileSize;
+                if (floorTex.Id != 0) DrawTextureScaled(floorTex, px, py);
+                else Raylib.DrawRectangle(px, py, TileSize, TileSize, new Color(30, 30, 35, 255));
                 Raylib.DrawRectangleLines(px, py, TileSize, TileSize, new Color(60, 60, 70, 255));
             }
-        }
     }
 
-    static void DrawEntities(StateDto state, Texture2D playerTex, Texture2D[] playerPaletteTex, Texture2D botTex)
+    static void DrawEntities(ObservationDto s, Texture2D playerTex, Texture2D botTex)
     {
-        foreach (EntityDto e in state.entities)
+        DrawActor(s.Self.Position.X, s.Self.Position.Y, true, playerTex, botTex);
+        foreach (var a in s.VisibleActors)
+            DrawActor(a.Position.X, a.Position.Y, false, playerTex, botTex);
+    }
+
+    static void DrawActor(int x, int y, bool isPlayer, Texture2D playerTex, Texture2D botTex)
+    {
+        int px = x * TileSize, py = y * TileSize;
+        Texture2D tex = isPlayer ? playerTex : botTex;
+        if (tex.Id != 0) DrawTextureScaled(tex, px, py);
+        else Raylib.DrawRectangle(px, py, TileSize, TileSize, isPlayer ? Color.Blue : Color.Red);
+    }
+
+    // Pokémon-style action menu along the bottom. Returns the menu-item rectangles
+    // so input handling (Task 9/10) can hit-test clicks.
+    static List<(Rectangle rect, ActionDef action)> DrawMenu(ObservationDto s)
+    {
+        var hits = new List<(Rectangle, ActionDef)>();
+        int top = s.Height * TileSize;
+        Raylib.DrawRectangle(0, top, s.Width * TileSize, MenuHeight, new Color(20, 20, 28, 255));
+
+        int x = 12, y = top + 12, w = 150, h = 34, gap = 10;
+        foreach (var a in s.AvailableActions)
         {
-            // Tile coords -> pixels. Origin is top-left and y increases downward,
-            // which matches Raylib's screen space directly, so no flip is needed.
-            int px = e.x * TileSize;
-            int py = e.y * TileSize;
-
-            bool isPlayer = e.kind == "player";
-            Texture2D tex = isPlayer ? PlayerPalette.Pick(playerPaletteTex, e.id) : botTex;
-            if (tex.Id == 0 && isPlayer) tex = playerTex;
-
-            if (tex.Id != 0)
-            {
-                DrawTextureScaled(tex, px, py);
-            }
-            else
-            {
-                // Colored-rectangle fallback so the game is playable with no art.
-                Color color = isPlayer ? Color.Blue : Color.Red;
-                Raylib.DrawRectangle(px, py, TileSize, TileSize, color);
-            }
+            var rect = new Rectangle(x, y, w, h);
+            bool selected = a.Id == _selectedActionId;
+            Raylib.DrawRectangleRec(rect, selected ? new Color(80, 80, 120, 255) : new Color(45, 45, 60, 255));
+            Raylib.DrawRectangleLinesEx(rect, 1, new Color(120, 120, 150, 255));
+            Raylib.DrawText(a.Id, (int)rect.X + 10, (int)rect.Y + 9, 18, Color.RayWhite);
+            hits.Add((rect, a));
+            x += w + gap;
+            if (x + w > s.Width * TileSize) { x = 12; y += h + gap; }
         }
+
+        string hint = _mode switch
+        {
+            Mode.Targeting => "Select a highlighted tile  (Esc / right-click to cancel)",
+            Mode.Waiting   => "Waiting for turn to resolve...",
+            _              => "Choose an action"
+        };
+        Raylib.DrawText(hint, 12, top + MenuHeight - 22, 16, new Color(170, 170, 190, 255));
+        return hits;
     }
 
     static void DrawTextureScaled(Texture2D tex, int px, int py)
@@ -198,15 +161,6 @@ static class Program
         Rectangle src = new(0, 0, tex.Width, tex.Height);
         Rectangle dst = new(px, py, TileSize, TileSize);
         Raylib.DrawTexturePro(tex, src, dst, new System.Numerics.Vector2(0, 0), 0f, Color.White);
-    }
-
-    static void DrawLegend(StateDto state)
-    {
-        string legend = "Actions: " + string.Join(' ', state.actions) + "  |  Arrow keys to move";
-        int y = state.height * TileSize - 22;
-        // Slight shadow for readability over any floor.
-        Raylib.DrawText(legend, 7, y + 1, 16, Color.Black);
-        Raylib.DrawText(legend, 6, y, 16, Color.RayWhite);
     }
 
     static Texture2D LoadTextureIfPresent(string fileName)
