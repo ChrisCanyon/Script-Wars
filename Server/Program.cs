@@ -1,3 +1,4 @@
+using ArenaGame.Core;
 using ArenaGame.Game;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -6,27 +7,14 @@ var app = builder.Build();
 // One shared world for this POC.
 var world = new World(width: 12, height: 12);
 
-// Server-driven tick loop: advances the world (bot wanders) a few times a second.
-// Turn-based later; for now this just makes movement visible.
-_ = Task.Run(async () =>
-{
-    while (true)
-    {
-        world.Step();
-        await Task.Delay(400);
-    }
-});
+// Turn-based now: no background tick loop. The world resolves a tick when every
+// actor has a pending intention (the bot auto-readies; the human POSTs /action).
 
-// Client polls this to render.
+// Client polls this to render (observation for the player's perspective).
 app.MapGet("/state", () => Results.Json(world.Snapshot()));
 
-// Client (human key press, or later a bot) sends an action here.
-app.MapPost("/action", (ActionRequest req) =>
-{
-    world.Apply(req.EntityId, req.Type);
-    return Results.Ok();
-});
+// Human submits an intention. Server is the authority: illegal -> 400.
+app.MapPost("/action", (Intention intention) =>
+    world.Submit(intention) ? Results.Ok() : Results.BadRequest(new { error = "illegal action" }));
 
 app.Run("http://localhost:5000");
-
-record ActionRequest(string EntityId, string Type);
