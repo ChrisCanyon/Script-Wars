@@ -24,9 +24,7 @@ static class Program
 
     enum Mode { Menu, Targeting, Waiting }
     static Mode _mode = Mode.Menu;
-#pragma warning disable CS0649 // assigned by Tasks 9/10
     static string? _selectedActionId;
-#pragma warning restore CS0649
     const int MenuHeight = 96;
 
     static void Main()
@@ -63,8 +61,10 @@ static class Program
             else
             {
                 DrawFloor(state, floorTex);
+                DrawHighlights(state);
                 DrawEntities(state, playerPaletteTex, playerTex, botTex);
-                DrawMenu(state);
+                var menuHits = DrawMenu(state);
+                HandleMouse(state, menuHits);
             }
 
             Raylib.EndDrawing();
@@ -158,6 +158,77 @@ static class Program
         Raylib.DrawText(hint, 12, top + MenuHeight - 22, 16, new Color(170, 170, 190, 255));
         return hits;
     }
+
+    // Legal tiles for the currently-selected action, computed locally via Core
+    // (the same function the server validates with). Empty when not targeting.
+    static List<Position> CurrentTargets(ObservationDto obs)
+    {
+        if (_mode != Mode.Targeting || _selectedActionId is null) return new();
+        var model = StateModel.FromObservation(obs);
+        return Rules.LegalTargets(model, obs.Self.Id, _selectedActionId);
+    }
+
+    static void DrawHighlights(ObservationDto obs)
+    {
+        foreach (var p in CurrentTargets(obs))
+        {
+            int px = p.X * TileSize, py = p.Y * TileSize;
+            Raylib.DrawRectangle(px, py, TileSize, TileSize, new Color(80, 200, 120, 90));
+            Raylib.DrawRectangleLinesEx(new Rectangle(px, py, TileSize, TileSize), 2,
+                new Color(120, 240, 160, 255));
+        }
+    }
+
+    static void HandleMouse(ObservationDto obs, List<(Rectangle rect, ActionDef action)> menuHits)
+    {
+        // Cancel: Esc or right-click returns to the menu without spending the turn.
+        if (_mode == Mode.Targeting &&
+            (Raylib.IsKeyPressed(KeyboardKey.Escape) || Raylib.IsMouseButtonPressed(MouseButton.Right)))
+        {
+            _mode = Mode.Menu; _selectedActionId = null;
+            return;
+        }
+
+        if (!Raylib.IsMouseButtonPressed(MouseButton.Left)) return;
+        var m = Raylib.GetMousePosition();
+
+        // Click on a menu item?
+        foreach (var (rect, action) in menuHits)
+        {
+            if (!Raylib.CheckCollisionPointRec(m, rect)) continue;
+            OnMenuClick(action);
+            return;
+        }
+
+        // Click on the board while targeting?
+        if (_mode == Mode.Targeting && _selectedActionId is not null)
+        {
+            int tx = (int)(m.X / TileSize), ty = (int)(m.Y / TileSize);
+            if (CurrentTargets(obs).Contains(new Position(tx, ty)))
+                CommitTarget(obs, tx, ty);   // implemented in Task 10
+        }
+    }
+
+    static void OnMenuClick(ActionDef action)
+    {
+        if (_mode == Mode.Waiting) return;
+
+        // Re-clicking the selected action (or clicking another) cancels targeting.
+        if (_mode == Mode.Targeting && action.Id == _selectedActionId)
+        {
+            _mode = Mode.Menu; _selectedActionId = null;
+            return;
+        }
+
+        _selectedActionId = action.Id;
+        if (action.TargetType == "none" || action.TargetType == "self")
+            CommitImmediate(action);         // implemented in Task 10
+        else
+            _mode = Mode.Targeting;
+    }
+
+    static void CommitImmediate(ActionDef action) { _mode = Mode.Menu; _selectedActionId = null; }
+    static void CommitTarget(ObservationDto obs, int tx, int ty) { _mode = Mode.Menu; _selectedActionId = null; }
 
     static void DrawTextureScaled(Texture2D tex, int px, int py)
     {
