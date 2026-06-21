@@ -57,4 +57,50 @@ public class RulesTests
         var s = TwoActors(5, 5, 1, 1);
         Assert.Empty(Rules.LegalTargets(s, "player", "wait"));
     }
+
+    [Fact]
+    public void IsLegal_accepts_move_to_adjacent_tile()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        var i = new Intention("player", "move", new Target(Position: new Position(5, 4)));
+        Assert.True(Rules.IsLegal(s, i));
+    }
+
+    [Fact]
+    public void IsLegal_rejects_move_two_tiles_away()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        var i = new Intention("player", "move", new Target(Position: new Position(5, 3)));
+        Assert.False(Rules.IsLegal(s, i));
+    }
+
+    [Fact]
+    public void IsLegal_accepts_attack_by_actorId_when_adjacent()
+    {
+        var s = TwoActors(5, 5, 5, 4);
+        var i = new Intention("player", "basic_attack", new Target(ActorId: "bot"));
+        Assert.True(Rules.IsLegal(s, i));
+    }
+
+    [Fact]
+    public void IsLegal_rejects_attack_by_actorId_when_not_adjacent()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        var i = new Intention("player", "basic_attack", new Target(ActorId: "bot"));
+        Assert.False(Rules.IsLegal(s, i));
+    }
+
+    [Fact]
+    public void IsLegal_accepts_wait_with_no_target()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        Assert.True(Rules.IsLegal(s, new Intention("player", "wait")));
+    }
+
+    [Fact]
+    public void IsLegal_rejects_unknown_action()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        Assert.False(Rules.IsLegal(s, new Intention("player", "teleport")));
+    }
 }

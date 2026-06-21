@@ -34,4 +34,44 @@ public static class Rules
         }
         return result;
     }
+
+    public static bool IsLegal(StateModel state, Intention intention)
+    {
+        var actor = state.ById(intention.ActorId);
+        if (actor is null) return false;
+        if (!Actions.All.TryGetValue(intention.ActionId, out var def)) return false;
+
+        switch (def.TargetType)
+        {
+            case "none":
+                return true;
+
+            case "self":
+                return intention.Target?.Self == true;
+
+            case "tile":
+            case "actor_or_tile":
+                var pos = ResolveTargetPosition(state, intention);
+                if (pos is null) return false;
+                return LegalTargets(state, intention.ActorId, intention.ActionId)
+                    .Contains(pos);
+
+            default:
+                return false;
+        }
+    }
+
+    // Turn an intention's target into a concrete board position, or null if it can't.
+    static Position? ResolveTargetPosition(StateModel state, Intention intention)
+    {
+        var t = intention.Target;
+        if (t is null) return null;
+        if (t.Position is not null) return t.Position;
+        if (t.ActorId is not null)
+        {
+            var target = state.ById(t.ActorId);
+            return target is null ? null : new Position(target.X, target.Y);
+        }
+        return null;
+    }
 }
