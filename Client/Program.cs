@@ -257,8 +257,22 @@ static class Program
 
     static async Task SendIntention(Intention intention)
     {
-        try { await Http.PostAsJsonAsync("/action", intention, JsonOpts); }
-        catch { /* fire-and-forget; the Waiting state simply persists until next tick */ }
+        try
+        {
+            var response = await Http.PostAsJsonAsync("/action", intention, JsonOpts);
+            if (!response.IsSuccessStatusCode)
+            {
+                // Server rejected the action (e.g. illegal/stale): return control to the player.
+                _mode = Mode.Menu;
+                _submittedAtTick = null;
+            }
+        }
+        catch
+        {
+            // Transport failure: don't strand the player in Waiting.
+            _mode = Mode.Menu;
+            _submittedAtTick = null;
+        }
     }
 
     static void DrawTextureScaled(Texture2D tex, int px, int py)
