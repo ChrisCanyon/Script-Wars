@@ -103,4 +103,56 @@ public class RulesTests
         var s = TwoActors(5, 5, 1, 1);
         Assert.False(Rules.IsLegal(s, new Intention("player", "teleport")));
     }
+
+    static Dictionary<string, Intention> Intents(params Intention[] xs)
+        => xs.ToDictionary(i => i.ActorId);
+
+    [Fact]
+    public void Resolve_applies_a_clean_move()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        var (ns, _) = Rules.Resolve(s, Intents(
+            new Intention("player", "move", new Target(Position: new Position(5, 4))),
+            new Intention("bot", "wait")));
+        var p = ns.ById("player")!;
+        Assert.Equal(5, p.X);
+        Assert.Equal(4, p.Y);
+    }
+
+    [Fact]
+    public void Resolve_contested_tile_blocks_all_and_emits_bump_events()
+    {
+        // player at (5,5) and bot at (5,3) both move to (5,4).
+        var s = TwoActors(5, 5, 5, 3);
+        var (ns, events) = Rules.Resolve(s, Intents(
+            new Intention("player", "move", new Target(Position: new Position(5, 4))),
+            new Intention("bot", "move", new Target(Position: new Position(5, 4)))));
+        Assert.Equal((5, 5), (ns.ById("player")!.X, ns.ById("player")!.Y)); // stayed
+        Assert.Equal((5, 3), (ns.ById("bot")!.X, ns.ById("bot")!.Y));       // stayed
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "player" && e.TargetId == "bot");
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "bot" && e.TargetId == "player");
+    }
+
+    [Fact]
+    public void Resolve_direct_swap_blocks_both_and_emits_bump_events()
+    {
+        // adjacent actors swapping: player (5,5)->(5,4), bot (5,4)->(5,5).
+        var s = TwoActors(5, 5, 5, 4);
+        var (ns, events) = Rules.Resolve(s, Intents(
+            new Intention("player", "move", new Target(Position: new Position(5, 4))),
+            new Intention("bot", "move", new Target(Position: new Position(5, 5)))));
+        Assert.Equal((5, 5), (ns.ById("player")!.X, ns.ById("player")!.Y));
+        Assert.Equal((5, 4), (ns.ById("bot")!.X, ns.ById("bot")!.Y));
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "player" && e.TargetId == "bot");
+        Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "bot" && e.TargetId == "player");
+    }
+
+    [Fact]
+    public void Resolve_missing_intention_defaults_to_wait()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        var (ns, _) = Rules.Resolve(s, Intents()); // nobody submitted
+        Assert.Equal((5, 5), (ns.ById("player")!.X, ns.ById("player")!.Y));
+        Assert.Equal((1, 1), (ns.ById("bot")!.X, ns.ById("bot")!.Y));
+    }
 }
