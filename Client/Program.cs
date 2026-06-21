@@ -25,6 +25,7 @@ static class Program
     enum Mode { Menu, Targeting, Waiting }
     static Mode _mode = Mode.Menu;
     static string? _selectedActionId;
+    static int? _submittedAtTick;
     const int MenuHeight = 96;
 
     static void Main()
@@ -181,6 +182,14 @@ static class Program
 
     static void HandleMouse(ObservationDto obs, List<(Rectangle rect, ActionDef action)> menuHits)
     {
+        // A new tick resolved: return control to the player.
+        if (_mode == Mode.Waiting && _submittedAtTick is int t && obs.Tick > t)
+        {
+            _mode = Mode.Menu;
+            _submittedAtTick = null;
+        }
+        if (_mode == Mode.Waiting) return; // ignore input while resolving
+
         // Cancel: Esc or right-click returns to the menu without spending the turn.
         if (_mode == Mode.Targeting &&
             (Raylib.IsKeyPressed(KeyboardKey.Escape) || Raylib.IsMouseButtonPressed(MouseButton.Right)))
@@ -196,7 +205,7 @@ static class Program
         foreach (var (rect, action) in menuHits)
         {
             if (!Raylib.CheckCollisionPointRec(m, rect)) continue;
-            OnMenuClick(action);
+            OnMenuClick(obs, action);
             return;
         }
 
@@ -209,11 +218,11 @@ static class Program
         }
     }
 
-    static void OnMenuClick(ActionDef action)
+    static void OnMenuClick(ObservationDto obs, ActionDef action)
     {
         if (_mode == Mode.Waiting) return;
 
-        // Re-clicking the selected action (or clicking another) cancels targeting.
+        // Re-clicking the already-selected action cancels targeting.
         if (_mode == Mode.Targeting && action.Id == _selectedActionId)
         {
             _mode = Mode.Menu; _selectedActionId = null;
@@ -222,13 +231,35 @@ static class Program
 
         _selectedActionId = action.Id;
         if (action.TargetType == "none" || action.TargetType == "self")
-            CommitImmediate(action);         // implemented in Task 10
+            CommitImmediate(obs, action);
         else
             _mode = Mode.Targeting;
     }
 
-    static void CommitImmediate(ActionDef action) { _mode = Mode.Menu; _selectedActionId = null; }
-    static void CommitTarget(ObservationDto obs, int tx, int ty) { _mode = Mode.Menu; _selectedActionId = null; }
+    static void CommitImmediate(ObservationDto obs, ActionDef action)
+    {
+        Target? target = action.TargetType == "self" ? new Target(Self: true) : null;
+        Submit(obs, new Intention(obs.Self.Id, action.Id, target));
+    }
+
+    static void CommitTarget(ObservationDto obs, int tx, int ty)
+    {
+        Submit(obs, new Intention(obs.Self.Id, _selectedActionId!, new Target(Position: new Position(tx, ty))));
+    }
+
+    static void Submit(ObservationDto obs, Intention intention)
+    {
+        _submittedAtTick = obs.Tick;
+        _mode = Mode.Waiting;
+        _selectedActionId = null;
+        _ = SendIntention(intention);
+    }
+
+    static async Task SendIntention(Intention intention)
+    {
+        try { await Http.PostAsJsonAsync("/action", intention, JsonOpts); }
+        catch { /* fire-and-forget; the Waiting state simply persists until next tick */ }
+    }
 
     static void DrawTextureScaled(Texture2D tex, int px, int py)
     {
