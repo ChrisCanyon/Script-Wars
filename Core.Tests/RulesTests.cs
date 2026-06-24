@@ -14,6 +14,36 @@ public class RulesTests
     };
 
     [Fact]
+    public void Move_excludes_blocked_tiles()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        s.Blocked.Add((5, 4)); // wall/boulder directly above the player
+        var t = Rules.LegalTargets(s, "player", "move");
+        Assert.DoesNotContain(new Position(5, 4), t);
+        Assert.Equal(3, t.Count);
+    }
+
+    [Fact]
+    public void IsLegal_rejects_move_into_blocked_tile()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        s.Blocked.Add((5, 4));
+        var i = new Intention("player", "move", new Target(Position: new Position(5, 4)));
+        Assert.False(Rules.IsLegal(s, i));
+    }
+
+    [Fact]
+    public void Resolve_does_not_move_an_actor_into_a_blocked_tile()
+    {
+        var s = TwoActors(5, 5, 1, 1);
+        s.Blocked.Add((5, 4));
+        var (ns, _) = Rules.Resolve(s, Intents(
+            new Intention("player", "move", new Target(Position: new Position(5, 4))),
+            new Intention("bot", "wait")));
+        Assert.Equal((5, 5), (ns.ById("player")!.X, ns.ById("player")!.Y)); // stayed put
+    }
+
+    [Fact]
     public void Move_offers_four_adjacent_in_bounds_unoccupied_tiles()
     {
         var s = TwoActors(5, 5, 1, 1);
@@ -157,14 +187,25 @@ public class RulesTests
     }
 
     [Fact]
-    public void Resolve_attack_by_actorId_emits_inert_damage_event()
+    public void Resolve_attack_by_actorId_damages_the_target()
     {
         var s = TwoActors(5, 5, 5, 4);
         var (ns, events) = Rules.Resolve(s, Intents(
             new Intention("player", "basic_attack", new Target(ActorId: "bot")),
             new Intention("bot", "wait")));
         Assert.Contains(events, e => e.Type == "damage" && e.SourceId == "player" && e.TargetId == "bot");
-        Assert.Equal(30, ns.ById("bot")!.Hp); // inert: hp unchanged
+        Assert.Equal(29, ns.ById("bot")!.Hp); // bot started at 30, took 1 damage
+    }
+
+    [Fact]
+    public void Resolve_damage_never_drops_hp_below_zero()
+    {
+        var s = TwoActors(5, 5, 5, 4);
+        s.ById("bot")!.Hp = 1;
+        var (ns, _) = Rules.Resolve(s, Intents(
+            new Intention("player", "basic_attack", new Target(ActorId: "bot")),
+            new Intention("bot", "wait")));
+        Assert.Equal(0, ns.ById("bot")!.Hp);
     }
 
     [Fact]

@@ -10,6 +10,8 @@ static class PlayerPalette
     static readonly Color MidSentinel = new(0, 0, 2, 255);
     static readonly Color HighlightSentinel = new(0, 0, 3, 255);
 
+    // Each palette is [shadow, mid, highlight], mapped onto the (0,0,1)/(0,0,2)/(0,0,3)
+    // sentinel pixels in the source sprite. 0=red 1=green 2=blue 3=purple 4=gold.
     static readonly Color[][] Palettes =
     [
         [new Color(86, 14, 26, 255), new Color(166, 38, 55, 255), new Color(238, 89, 92, 255)],
@@ -19,9 +21,28 @@ static class PlayerPalette
         [new Color(112, 77, 14, 255), new Color(191, 137, 28, 255), new Color(255, 205, 76, 255)],
     ];
 
-    public static Texture2D[] LoadVariants(string fileName)
+    // The player's color. Change this index to recolor the player (see palette list above).
+    public const int PlayerColorIndex = 2;
+
+    // Load one sprite and recolor its sentinel pixels to the given palette.
+    // Returns default (Id 0) if the file is missing — caller falls back to a flat color.
+    public static Texture2D LoadTinted(string assetPath, int paletteIndex)
     {
-        string path = Path.Combine(AppContext.BaseDirectory, "assets", fileName);
+        string path = Path.Combine(AppContext.BaseDirectory, "assets", assetPath);
+        if (!File.Exists(path)) return default;
+
+        Image img = Raylib.LoadImage(path);
+        try
+        {
+            ApplyPalette(ref img, Palettes[paletteIndex]);
+            return Raylib.LoadTextureFromImage(img);
+        }
+        finally { Raylib.UnloadImage(img); }
+    }
+
+    public static Texture2D[] LoadVariants(string assetPath)
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "assets", assetPath);
         if (!File.Exists(path)) return [];
 
         Image source = Raylib.LoadImage(path);

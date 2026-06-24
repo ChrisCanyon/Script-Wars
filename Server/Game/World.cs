@@ -11,6 +11,7 @@ public class World
 
     private readonly StateModel _state;
     private readonly Dictionary<string, Intention> _pending = new();
+    private readonly HashSet<(int X, int Y)> _boulders = new(); // blocked tiles that are boulders, not border walls
     private int _tick;
     private LastTurnResultDto? _last;
 
@@ -21,7 +22,7 @@ public class World
         PhaseOrder: new[] { "movement", "attacks", "cleanup" },
         MovementConflictRule: "contested_tile_blocks_all",
         SwapRule: "direct_swaps_blocked",
-        MissingAction: "wait");
+        MissingAction: ActionIds.Wait);
 
     public World(int width, int height)
     {
@@ -30,13 +31,39 @@ public class World
             Width = width, Height = height,
             Actors =
             {
-                new ActorState { Id = PlayerId, Type = "player", TeamId = "players",
-                                 Hp = 100, MaxHp = 100, X = width / 2, Y = height / 2 },
-                new ActorState { Id = BotId, Type = "bot", TeamId = "bots",
-                                 Hp = 30, MaxHp = 30, X = 1, Y = 1 },
+                new ActorState { Id = PlayerId, Type = ActorTypes.Player, TeamId = "players",
+                                 Hp = 10, MaxHp = 10, X = width / 2, Y = height / 2 },
+                new ActorState { Id = BotId, Type = ActorTypes.Bot, TeamId = "bots",
+                                 Hp = 10, MaxHp = 10, X = 1, Y = 1 },
             }
         };
+        GenerateObstacles();
         AutoPickBot();
+    }
+
+    // Border wall around the arena + boulders scattered on ~5-10% of the board.
+    // Actor start tiles are kept clear.
+    private void GenerateObstacles()
+    {
+        int w = _state.Width, h = _state.Height;
+        var occupied = _state.Actors.Select(a => (a.X, a.Y)).ToHashSet();
+
+        for (int x = 0; x < w; x++)
+            for (int y = 0; y < h; y++)
+                if (x == 0 || y == 0 || x == w - 1 || y == h - 1)
+                    _state.Blocked.Add((x, y));               // border wall
+
+        int target = (int)(w * h * (0.05 + _rng.NextDouble() * 0.05)); // 5-10% boulders
+        int placed = 0, guard = 0;
+        while (placed < target && guard++ < w * h * 10)
+        {
+            int bx = _rng.Next(1, w - 1), by = _rng.Next(1, h - 1);
+            var cell = (bx, by);
+            if (occupied.Contains(cell) || _state.Blocked.Contains(cell)) continue;
+            _state.Blocked.Add(cell);
+            _boulders.Add(cell);
+            placed++;
+        }
     }
 
     public bool Submit(Intention intention)
@@ -54,10 +81,10 @@ public class World
     // Choose a legal action for the bot for the current tick. Random move, else wait.
     private void AutoPickBot()
     {
-        var moves = Rules.LegalTargets(_state, BotId, "move");
+        var moves = Rules.LegalTargets(_state, BotId, ActionIds.Move);
         _pending[BotId] = moves.Count > 0
-            ? new Intention(BotId, "move", new Target(Position: moves[_rng.Next(moves.Count)]))
-            : new Intention(BotId, "wait");
+            ? new Intention(BotId, ActionIds.Move, new Target(Position: moves[_rng.Next(moves.Count)]))
+            : new Intention(BotId, ActionIds.Wait);
     }
 
     private void TryResolve()
@@ -109,7 +136,11 @@ public class World
         var tiles = new List<TileDto>(_state.Width * _state.Height);
         for (int y = 0; y < _state.Height; y++)
             for (int x = 0; x < _state.Width; x++)
-                tiles.Add(new TileDto(x, y, "stone", false));
+            {
+                bool blocked = _state.IsBlocked(x, y);
+                string terrain = !blocked ? Terrains.Stone : _boulders.Contains((x, y)) ? Terrains.Boulder : Terrains.Wall;
+                tiles.Add(new TileDto(x, y, terrain, blocked));
+            }
         return tiles.ToArray();
     }
 }

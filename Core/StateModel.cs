@@ -24,14 +24,19 @@ public class StateModel
     public int Height { get; init; }
     public List<ActorState> Actors { get; init; } = new();
 
+    // Inaccessible tiles (walls, boulders) nobody can move onto.
+    public HashSet<(int X, int Y)> Blocked { get; init; } = new();
+
     public ActorState? ById(string id) => Actors.FirstOrDefault(a => a.Id == id);
     public ActorState? ActorAt(int x, int y) => Actors.FirstOrDefault(a => a.X == x && a.Y == y);
     public bool InBounds(int x, int y) => x >= 0 && y >= 0 && x < Width && y < Height;
+    public bool IsBlocked(int x, int y) => Blocked.Contains((x, y));
 
     public StateModel Clone() => new()
     {
         Width = Width, Height = Height,
-        Actors = Actors.Select(a => a.Clone()).ToList()
+        Actors = Actors.Select(a => a.Clone()).ToList(),
+        Blocked = new HashSet<(int, int)>(Blocked)
     };
 
     // Build a rules-ready snapshot from a received observation (used by the client).
@@ -49,6 +54,10 @@ public class StateModel
             Id = a.Id, Type = a.Type, TeamId = a.TeamId, Hp = a.Hp, MaxHp = a.MaxHp,
             X = a.Position.X, Y = a.Position.Y, StatusEffects = a.StatusEffects
         }));
-        return new StateModel { Width = obs.Width, Height = obs.Height, Actors = actors };
+        var blocked = new HashSet<(int, int)>();
+        foreach (var t in obs.VisibleTiles)
+            if (t.Blocked) blocked.Add((t.X, t.Y));
+
+        return new StateModel { Width = obs.Width, Height = obs.Height, Actors = actors, Blocked = blocked };
     }
 }

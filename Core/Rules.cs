@@ -12,16 +12,16 @@ public static class Rules
 
         switch (def.TargetType)
         {
-            case "tile": // movement: in-bounds, unoccupied, within range (range 1 = adjacent)
+            case TargetTypes.Tile: // movement: in-bounds, not blocked, unoccupied, within range (range 1 = adjacent)
                 foreach (var (dx, dy) in Adjacent)
                 {
                     int nx = actor.X + dx, ny = actor.Y + dy;
-                    if (state.InBounds(nx, ny) && state.ActorAt(nx, ny) is null)
+                    if (state.InBounds(nx, ny) && !state.IsBlocked(nx, ny) && state.ActorAt(nx, ny) is null)
                         result.Add(new Position(nx, ny));
                 }
                 break;
 
-            case "actor_or_tile": // attack: any in-bounds adjacent tile (occupied or not)
+            case TargetTypes.ActorOrTile: // attack: any in-bounds adjacent tile (occupied or not)
                 foreach (var (dx, dy) in Adjacent)
                 {
                     int nx = actor.X + dx, ny = actor.Y + dy;
@@ -43,14 +43,14 @@ public static class Rules
 
         switch (def.TargetType)
         {
-            case "none":
+            case TargetTypes.None:
                 return true;
 
-            case "self":
+            case TargetTypes.Self:
                 return intention.Target?.Self == true;
 
-            case "tile":
-            case "actor_or_tile":
+            case TargetTypes.Tile:
+            case TargetTypes.ActorOrTile:
                 var pos = ResolveTargetPosition(state, intention);
                 if (pos is null) return false;
                 return LegalTargets(state, intention.ActorId, intention.ActionId)
@@ -89,13 +89,14 @@ public static class Rules
         foreach (var actor in next.Actors)
         {
             if (!intentions.TryGetValue(actor.Id, out var intent)) continue;       // missing -> wait
-            if (intent.ActionId != "move") continue;
+            if (intent.ActionId != ActionIds.Move) continue;
             var pos = ResolveTargetPosition(state, intent);
             if (pos is null) continue;
-            // Must be in-bounds and adjacent (range-1 move).
+            // Must be in-bounds, not a blocked tile, and adjacent (range-1 move).
             int dx = Math.Abs(pos.X - actor.X), dy = Math.Abs(pos.Y - actor.Y);
             bool isAdjacent = (dx == 1 && dy == 0) || (dx == 0 && dy == 1);
-            if (!state.InBounds(pos.X, pos.Y) || !isAdjacent) continue;           // invalid -> wait
+            if (!state.InBounds(pos.X, pos.Y) || state.IsBlocked(pos.X, pos.Y) || !isAdjacent)
+                continue;                                                         // invalid -> wait
             desired[actor.Id] = pos;
         }
 
@@ -145,12 +146,13 @@ public static class Rules
             actor.X = pos.X; actor.Y = pos.Y;
         }
 
-        // Attacks phase: resolve against POST-movement positions. Inert (no hp change).
+        // Attacks phase: resolve against POST-movement positions; the cleanup phase
+        // applies the resulting damage events to hp.
         const int MeleeAttackDamage = 1;
         foreach (var actor in next.Actors)
         {
             if (!intentions.TryGetValue(actor.Id, out var intent)) continue;
-            if (intent.ActionId != "basic_attack") continue;
+            if (intent.ActionId != ActionIds.BasicAttack) continue;
             if (!IsLegal(state, intent)) continue; // legality is judged on pre-move state, like submission
 
             // Find the targeted tile and whoever stands there now (post-movement).
@@ -161,10 +163,17 @@ public static class Rules
                 if (named is not null) tile = new Position(named.X, named.Y);
             }
             string? victimId = tile is null ? null : next.ActorAt(tile.X, tile.Y)?.Id;
-            events.Add(new GameEvent("damage", actor.Id, victimId, MeleeAttackDamage));
+            events.Add(new GameEvent(EventTypes.Damage, actor.Id, victimId, MeleeAttackDamage));
         }
 
-        // Cleanup phase: reserved (no deaths/status this increment).
+        // Cleanup phase: apply every damage event to the victim's hp, clamped at 0.
+        // Both attacks and collision bumps deal damage. No death/removal yet.
+        foreach (var ev in events)
+        {
+            if (ev.Type != EventTypes.Damage || ev.TargetId is null) continue;
+            var victim = next.ById(ev.TargetId);
+            if (victim is not null) victim.Hp = Math.Max(0, victim.Hp - ev.Amount);
+        }
 
         return (next, events);
     }
@@ -175,6 +184,6 @@ public static class Rules
         for (int i = 0; i < ids.Count; i++)
             for (int j = 0; j < ids.Count; j++)
                 if (i != j)
-                    events.Add(new GameEvent("damage", ids[i], ids[j], MeleeBumpDamage));
+                    events.Add(new GameEvent(EventTypes.Damage, ids[i], ids[j], MeleeBumpDamage));
     }
 }
